@@ -15,13 +15,15 @@ import PaymentForm from './PaymentForm';
 import PaymentHistory from './PaymentHistory';
 import StudentBalanceSummary from './StudentBalanceSummary';
 import AddStudentForm from './AddStudentForm';
-import { DollarSign, Clock, Users, Calendar, PlusCircle, CreditCard, Receipt } from 'lucide-react';
+import { DollarSign, Clock, Users, Calendar, PlusCircle, CreditCard, Receipt, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const ParentDashboard = () => {
   const { user } = useAuth();
   const { currentSession } = useSession();
-  const [payments, setPayments] = useState([]);
+  
+  // State declarations - All from Firebase only
+  const [allPayments, setAllPayments] = useState([]);
   const [feeStructures, setFeeStructures] = useState([]);
   const [students, setStudents] = useState([]);
   const [refresh, setRefresh] = useState(false);
@@ -32,8 +34,14 @@ const ParentDashboard = () => {
   const [busRoutes, setBusRoutes] = useState([]);
   const [activeMobileView, setActiveMobileView] = useState('payment');
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [dataLoaded, setDataLoaded] = useState({
+    students: false,
+    payments: false,
+    feeStructures: false,
+    busRoutes: false
+  });
 
-  // Check screen size for mobile view
+  // Mobile responsiveness
   useEffect(() => {
     const handleResize = () => {
       setIsMobile(window.innerWidth < 768);
@@ -42,76 +50,102 @@ const ParentDashboard = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Listen to real-time data from Firebase
+  // Load all data from Firebase - NO localStorage
   useEffect(() => {
     if (!user || !user.uid) {
       console.log("No user authenticated");
       return;
     }
 
-    console.log("Setting up Firebase listeners for user:", user.uid);
+    if (!currentSession) {
+      console.log("No current session");
+      return;
+    }
 
-    // Listen to students
+    console.log("=== ParentDashboard Loading from Firebase ===");
+    console.log("User UID:", user.uid);
+    console.log("Current Session ID:", currentSession.id);
+
+    // Listen to students from Firebase
     const unsubscribeStudents = listenToStudents((allStudents) => {
-      console.log("All students from Firebase:", allStudents);
+      console.log("Students from Firebase:", allStudents);
       const parentStudents = allStudents.filter(s => s.parentId === user.uid);
       console.log("Parent's students:", parentStudents);
       setStudents(parentStudents);
+      setDataLoaded(prev => ({ ...prev, students: true }));
     });
 
-    // Listen to payments
-    const unsubscribePayments = listenToPayments((allPayments) => {
-      console.log("All payments from Firebase:", allPayments);
-      setPayments(allPayments || []);
+    // Listen to all payments from Firebase
+    const unsubscribePayments = listenToPayments((payments) => {
+      console.log("Payments from Firebase:", payments);
+      setAllPayments(payments || []);
+      setDataLoaded(prev => ({ ...prev, payments: true }));
     });
 
-    // Listen to fee structures
-    if (currentSession) {
-      const unsubscribeFees = listenToFeeStructures(currentSession.id, (fees) => {
-        console.log("Fee structures loaded:", fees);
-        setFeeStructures(fees || []);
-      });
-      
-      const unsubscribeExtra = listenToExtraBills((bills) => {
-        console.log("Extra bills loaded:", bills);
-        setExtraBills(bills || []);
-      });
-      
-      const unsubscribeBusReg = listenToBusRegistrations((registrations) => {
-        console.log("Bus registrations loaded:", registrations);
-        setBusRegistrations(registrations || []);
-      });
-      
-      const unsubscribeBusRoutes = listenToBusRoutes(currentSession.id, (routes) => {
-        console.log("Bus routes loaded:", routes);
-        setBusRoutes(routes || []);
-      });
-      
-      setTimeout(() => setLoading(false), 1000);
-      
-      return () => {
-        unsubscribeStudents();
-        unsubscribePayments();
-        unsubscribeFees();
-        unsubscribeExtra();
-        unsubscribeBusReg();
-        unsubscribeBusRoutes();
-      };
-    }
+    // Listen to fee structures for current session from Firebase
+    const unsubscribeFees = listenToFeeStructures(currentSession.id, (fees) => {
+      console.log(`Fee structures for session ${currentSession.id} from Firebase:`, fees);
+      setFeeStructures(fees || []);
+      setDataLoaded(prev => ({ ...prev, feeStructures: true }));
+    });
+    
+    // Listen to bus routes for current session from Firebase
+    const unsubscribeBusRoutes = listenToBusRoutes(currentSession.id, (routes) => {
+      console.log(`Bus routes for session ${currentSession.id} from Firebase:`, routes);
+      setBusRoutes(routes || []);
+      setDataLoaded(prev => ({ ...prev, busRoutes: true }));
+    });
+    
+    // Listen to extra bills from Firebase
+    const unsubscribeExtra = listenToExtraBills((bills) => {
+      console.log("Extra bills from Firebase:", bills);
+      setExtraBills(bills || []);
+    });
+    
+    // Listen to bus registrations from Firebase
+    const unsubscribeBusReg = listenToBusRegistrations((registrations) => {
+      console.log("Bus registrations from Firebase:", registrations);
+      setBusRegistrations(registrations || []);
+    });
+    
+    // Check when all essential data is loaded
+    const interval = setInterval(() => {
+      if (dataLoaded.students && dataLoaded.payments && dataLoaded.feeStructures && loading) {
+        console.log("All essential data loaded from Firebase");
+        setLoading(false);
+        clearInterval(interval);
+      }
+    }, 500);
+    
+    // Timeout after 5 seconds
+    const timer = setTimeout(() => {
+      console.log("Loading timeout - forcing display");
+      setLoading(false);
+      clearInterval(interval);
+    }, 5000);
     
     return () => {
       unsubscribeStudents();
       unsubscribePayments();
+      unsubscribeFees();
+      unsubscribeBusRoutes();
+      unsubscribeExtra();
+      unsubscribeBusReg();
+      clearInterval(interval);
+      clearTimeout(timer);
     };
   }, [user, currentSession]);
 
-  // Get tuition fee from admin fee structure
+  // Helper function to get tuition fee from Firebase data
   const getTuitionFee = (className, term) => {
+    if (!feeStructures || feeStructures.length === 0) {
+      return 0;
+    }
     const fee = feeStructures.find(f => f.className === className && f.term === term);
     return fee ? fee.amount : 0;
   };
 
-  // Get bus fee from parent registration for specific term
+  // Helper function to get bus fee from Firebase data
   const getBusFee = (studentId, term) => {
     const registration = busRegistrations.find(
       r => r.studentId === studentId && r.term === term && r.usesBus
@@ -119,43 +153,51 @@ const ParentDashboard = () => {
     return registration ? registration.busFee : 0;
   };
 
-  // Get total paid for a student in a specific term (only approved payments)
-  const getPaidAmount = (studentId, term) => {
-    const approvedPayments = payments.filter(p => 
-      p.studentId === studentId && p.term === term && p.status === 'approved'
+  // Get total paid for a specific student in a specific term from Firebase payments
+  const getStudentTermPaid = (studentId, term) => {
+    const relevantPayments = allPayments.filter(p => 
+      p.studentId === studentId && 
+      p.term === term && 
+      p.status === 'approved'
     );
-    return approvedPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+    return relevantPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
   };
 
-  // Get UNPAID extra bills for a student (not paid yet)
+  // Get total paid for a student across all terms from Firebase payments
+  const getStudentTotalPaid = (studentId) => {
+    const relevantPayments = allPayments.filter(p => 
+      p.studentId === studentId && p.status === 'approved'
+    );
+    return relevantPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+  };
+
+  // Get unpaid extra bills from Firebase
   const getUnpaidExtraBills = (studentId) => {
     return extraBills.filter(b => b.studentId === studentId && !b.isPaid);
   };
 
-  // Get total unpaid extra bills amount
-  const getTotalUnpaidExtraBills = (studentId) => {
-    const unpaid = getUnpaidExtraBills(studentId);
-    return unpaid.reduce((sum, b) => sum + (b.amount || 0), 0);
-  };
-
-  // Build student summary with all fees
+  // Build complete student balance data from Firebase
   const getStudentsWithBalances = () => {
-    return students.map(student => {
+    console.log("Building student balances from Firebase data");
+    console.log("Fee structures count:", feeStructures.length);
+    console.log("Students count:", students.length);
+    console.log("Payments count:", allPayments.length);
+    
+    const studentsWithData = students.map(student => {
       const terms = ['First Term', 'Second Term', 'Third Term'];
-      let totalTuitionForSession = 0;
-      let totalBusForSession = 0;
-      let totalPaidForSession = 0;
+      let studentTotalTuition = 0;
+      let studentTotalBus = 0;
       
+      // Calculate per term
       const termSummaries = terms.map(term => {
         const tuitionFee = getTuitionFee(student.className, term);
         const busFee = getBusFee(student.id, term);
         const totalFeeForTerm = tuitionFee + busFee;
-        const paidForTerm = getPaidAmount(student.id, term);
+        const paidForTerm = getStudentTermPaid(student.id, term);
         const balanceForTerm = totalFeeForTerm - paidForTerm;
         
-        totalTuitionForSession += tuitionFee;
-        totalBusForSession += busFee;
-        totalPaidForSession += paidForTerm;
+        studentTotalTuition += tuitionFee;
+        studentTotalBus += busFee;
         
         return {
           term,
@@ -168,19 +210,20 @@ const ParentDashboard = () => {
         };
       });
       
-      // Get unpaid extra bills for this student
+      // Add extra bills
       const unpaidExtraBills = getUnpaidExtraBills(student.id);
       const unpaidExtraBillsTotal = unpaidExtraBills.reduce((sum, b) => sum + (b.amount || 0), 0);
       
-      // TOTAL FEE = Tuition + Bus + Unpaid Extra Bills
-      const totalFeeForSession = totalTuitionForSession + totalBusForSession + unpaidExtraBillsTotal;
+      // Calculate totals
+      const totalFeeForSession = studentTotalTuition + studentTotalBus + unpaidExtraBillsTotal;
+      const totalPaidForSession = getStudentTotalPaid(student.id);
       const overallBalance = totalFeeForSession - totalPaidForSession;
       
       return {
         ...student,
         termSummaries,
-        totalTuitionForSession,
-        totalBusForSession,
+        totalTuitionForSession: studentTotalTuition,
+        totalBusForSession: studentTotalBus,
         extraBillsTotal: unpaidExtraBillsTotal,
         extraBillsList: unpaidExtraBills,
         totalFeeForSession,
@@ -189,12 +232,25 @@ const ParentDashboard = () => {
         isFullyPaid: overallBalance === 0 && totalFeeForSession > 0
       };
     });
+    
+    return studentsWithData;
   };
 
+  // Calculate dashboard totals from Firebase data
   const studentsWithBalances = getStudentsWithBalances();
-  const approvedPayments = payments.filter(p => p.status === 'approved');
-  const totalPaid = approvedPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
-  const pendingPayments = payments.filter(p => p.status === 'pending').length;
+  const parentStudentIds = students.map(s => s.id);
+  
+  // Total paid across all parent's students from Firebase
+  const totalPaid = allPayments
+    .filter(p => parentStudentIds.includes(p.studentId) && p.status === 'approved')
+    .reduce((sum, p) => sum + (p.amount || 0), 0);
+  
+  // Pending payments count from Firebase
+  const pendingPayments = allPayments
+    .filter(p => parentStudentIds.includes(p.studentId) && p.status === 'pending')
+    .length;
+  
+  // Total session fee across all students
   const totalSessionFee = studentsWithBalances.reduce((total, student) => total + (student.totalFeeForSession || 0), 0);
 
   const handleDataUpdate = () => {
@@ -205,18 +261,23 @@ const ParentDashboard = () => {
     setShowAddStudent(true);
   };
 
-  const onStudentAdded = async (newStudent) => {
-    console.log("Student added, refreshing dashboard...", newStudent);
+  const onStudentAdded = () => {
     handleDataUpdate();
   };
 
-  if (loading) {
+  // Show loading indicator while fetching from Firebase
+  if (loading && students.length === 0) {
     return (
       <div className="container">
         <div className="card">
           <div className="card-body" style={{ textAlign: 'center', padding: '60px' }}>
             <div className="spinner"></div>
-            <p style={{ marginTop: '20px', color: '#6b7280' }}>Loading your dashboard...</p>
+            <p style={{ marginTop: '20px', color: '#6b7280' }}>Loading your dashboard from Firebase...</p>
+            <p style={{ fontSize: '12px', marginTop: '10px', color: '#9ca3af' }}>
+              {!dataLoaded.students && "📚 Loading students... "}
+              {!dataLoaded.payments && "💰 Loading payments... "}
+              {!dataLoaded.feeStructures && "📋 Loading fee structures... "}
+            </p>
           </div>
         </div>
       </div>
@@ -252,7 +313,7 @@ const ParentDashboard = () => {
         </p>
       </div>
       
-      {/* Session Info Banner */}
+      {/* Session Info */}
       <div className="session-banner" style={{ 
         padding: isMobile ? '12px' : '16px',
         marginBottom: isMobile ? '16px' : '24px',
@@ -263,9 +324,7 @@ const ParentDashboard = () => {
           <div>
             <strong style={{ fontSize: isMobile ? '0.75rem' : '0.875rem' }}>{currentSession.name} Session</strong>
             <p style={{ fontSize: '0.65rem', marginTop: '2px' }}>
-              {currentSession.startDate && currentSession.endDate 
-                ? `${currentSession.startDate} to ${currentSession.endDate}`
-                : 'Current session'}
+              ID: {currentSession.id}
             </p>
           </div>
         </div>
@@ -281,7 +340,7 @@ const ParentDashboard = () => {
         </div>
       </div>
       
-      {/* Summary Cards */}
+      {/* Stats Cards */}
       <div className="summary-grid" style={{ 
         display: 'grid',
         gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)',
@@ -307,7 +366,7 @@ const ParentDashboard = () => {
         </div>
       </div>
       
-      {/* Mobile Toggle Buttons */}
+      {/* Mobile Toggle */}
       {isMobile && (
         <div style={{ 
           display: 'flex', 
@@ -362,14 +421,14 @@ const ParentDashboard = () => {
         </div>
       )}
       
-      {/* Main Content - Two Columns */}
+      {/* Main Content */}
       <div style={{ 
         display: 'grid', 
         gridTemplateColumns: isMobile ? '1fr' : '1fr 1.5fr', 
         gap: isMobile ? '16px' : '24px',
         marginBottom: isMobile ? '20px' : '24px'
       }}>
-        {/* Left Column - Payment Form */}
+        {/* Payment Form Section */}
         {(isMobile ? activeMobileView === 'payment' : true) && (
           <div>
             <PaymentForm 
@@ -395,7 +454,7 @@ const ParentDashboard = () => {
           </div>
         )}
         
-        {/* Right Column - Student Balance Summary */}
+        {/* Balance Summary Section */}
         {(isMobile ? activeMobileView === 'summary' : true) && (
           <StudentBalanceSummary 
             students={studentsWithBalances} 
@@ -406,7 +465,7 @@ const ParentDashboard = () => {
         )}
       </div>
       
-      {/* Add Another Student Button - Mobile Version */}
+      {/* Add Student Button for Mobile */}
       {isMobile && students.length > 0 && activeMobileView === 'payment' && (
         <div style={{ marginBottom: '20px' }}>
           <button 
@@ -420,7 +479,7 @@ const ParentDashboard = () => {
         </div>
       )}
       
-      {/* Payment History Section */}
+      {/* Payment History */}
       <div style={{ marginTop: '24px' }}>
         <PaymentHistory />
       </div>
@@ -430,6 +489,7 @@ const ParentDashboard = () => {
         <AddStudentForm 
           onClose={() => setShowAddStudent(false)}
           onStudentAdded={onStudentAdded}
+          existingStudents={students}
         />
       )}
     </div>

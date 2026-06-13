@@ -13,11 +13,12 @@ const PaymentHistory = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !currentSession) return;
 
     const unsubscribe = listenToPayments((allPayments) => {
+      // Filter for this parent's payments only
       const filteredPayments = (allPayments || []).filter(p => 
-        p.parentId === user.uid && p.sessionId === currentSession?.id
+        p.parentId === user.uid && p.sessionId === currentSession.id
       );
       filteredPayments.sort((a, b) => new Date(b.date) - new Date(a.date));
       setPayments(filteredPayments);

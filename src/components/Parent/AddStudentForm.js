@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { X, UserPlus, BookOpen, User, Hash } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { saveStudent, addStudentToParent } from '../../config/firebase';
+import { saveStudent, addStudentToParent, listenToStudents } from '../../config/firebase';
 
-const AddStudentForm = ({ onClose, onStudentAdded }) => {
+const AddStudentForm = ({ onClose, onStudentAdded, existingStudents = [] }) => {
   const { user } = useAuth();
   const [formData, setFormData] = useState({
     studentName: '',
@@ -13,11 +13,25 @@ const AddStudentForm = ({ onClose, onStudentAdded }) => {
     relationship: 'parent'
   });
   const [loading, setLoading] = useState(false);
+  const [allStudents, setAllStudents] = useState(existingStudents);
 
-  // Function to sanitize ID (remove special characters that break Firestore paths)
+  useEffect(() => {
+    const unsubscribe = listenToStudents((students) => {
+      setAllStudents(students);
+    });
+    return () => unsubscribe();
+  }, []);
+
   const sanitizeId = (text) => {
     if (!text) return '';
     return text.replace(/[\/\\#\$\*\[\]\{\}\|\^\~`]/g, '_').replace(/\s+/g, '_');
+  };
+
+  const isDuplicateAdmissionNumber = (admissionNumber) => {
+    if (!admissionNumber) return false;
+    return allStudents.some(
+      s => s.admissionNumber && s.admissionNumber.toLowerCase() === admissionNumber.toLowerCase()
+    );
   };
 
   const handleSubmit = async (e) => {
@@ -33,18 +47,17 @@ const AddStudentForm = ({ onClose, onStudentAdded }) => {
       return;
     }
     
+    if (isDuplicateAdmissionNumber(formData.admissionNumber)) {
+      toast.error(`Admission number "${formData.admissionNumber}" already exists!`);
+      return;
+    }
+    
     setLoading(true);
     
     try {
-      // Sanitize the admission number (replace / with _)
       const sanitizedAdmission = sanitizeId(formData.admissionNumber);
       const sanitizedName = sanitizeId(formData.studentName);
-      
-      // Create a unique student ID without special characters
       const studentId = `${sanitizedAdmission}_${sanitizedName}_${Date.now()}`;
-      
-      console.log("Generated student ID:", studentId);
-      console.log("User UID:", user.uid);
       
       const newStudent = {
         id: studentId,
@@ -57,52 +70,47 @@ const AddStudentForm = ({ onClose, onStudentAdded }) => {
         registeredDate: new Date().toISOString()
       };
       
-      console.log("Saving student to Firebase:", newStudent);
-      
-      // Step 1: Save student to Firebase
       const saveResult = await saveStudent(newStudent);
-      
       if (!saveResult.success) {
-        toast.error('Failed to add student: ' + saveResult.error);
+        toast.error(saveResult.error || 'Failed to add student');
         setLoading(false);
         return;
       }
       
-      console.log("Student saved successfully");
-      
-      // Step 2: Link student to parent
       const linkResult = await addStudentToParent(user.uid, studentId);
-      
       if (!linkResult.success) {
-        console.error("Failed to link student:", linkResult.error);
-        toast.error('Student saved but failed to link to account. Please contact support.');
+        toast.error('Failed to link student to account');
         setLoading(false);
         return;
       }
       
-      console.log("Student linked to parent successfully");
+      toast.success(`${formData.studentName} added successfully!`);
       
-      toast.success(`${formData.studentName} (${formData.admissionNumber}) added to your account`);
-      
-      // Step 3: Call the callback to refresh the dashboard
       if (onStudentAdded) {
-        await onStudentAdded(newStudent);
+        onStudentAdded();
       }
       
       onClose();
       
     } catch (error) {
-      console.error("Error adding student:", error);
-      toast.error('Failed to add student. Please try again.');
-    } finally {
+      console.error("Add student error:", error);
+      toast.error('An error occurred. Please try again.');
       setLoading(false);
     }
   };
 
+  // Complete class list with Pre-Nursery, Nursery, Primary, JSS, and SS
   const classes = [
-    'Grade 1', 'Grade 2', 'Grade 3', 'Grade 4', 'Grade 5',
+    // Pre-School section
+    'Pre-Nursery', 'Playgroup', 'Nursery 1', 'Nursery 2', 'Nursery 3',
+    // Primary section
+    'Primary 1', 'Primary 2', 'Primary 3', 'Primary 4', 'Primary 5',
+    // Junior Secondary School (JSS) - ADDED BACK
     'JSS 1', 'JSS 2', 'JSS 3',
-    'SS 1', 'SS 2', 'SS 3'
+    // Senior Secondary School (SS)
+    'SS1 Science', 'SS1 Commercial', 'SS1 Arts',
+    'SS2 Science', 'SS2 Commercial', 'SS2 Arts',
+    'SS3 Science', 'SS3 Commercial', 'SS3 Arts'
   ];
 
   return (
@@ -116,16 +124,14 @@ const AddStudentForm = ({ onClose, onStudentAdded }) => {
             </h3>
             <button 
               onClick={onClose} 
+              type="button"
               style={{ 
                 background: '#f3f4f6', 
                 border: 'none', 
                 width: '32px', 
                 height: '32px', 
                 borderRadius: '50%', 
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center'
+                cursor: 'pointer'
               }}
             >
               <X size={18} />
@@ -134,10 +140,7 @@ const AddStudentForm = ({ onClose, onStudentAdded }) => {
           
           <form onSubmit={handleSubmit}>
             <div className="form-group">
-              <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <User size={16} />
-                Student Full Name *
-              </label>
+              <label>Student Full Name *</label>
               <input
                 type="text"
                 value={formData.studentName}
@@ -149,10 +152,7 @@ const AddStudentForm = ({ onClose, onStudentAdded }) => {
             </div>
             
             <div className="form-group">
-              <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Hash size={16} />
-                Admission Number *
-              </label>
+              <label>Admission Number *</label>
               <input
                 type="text"
                 value={formData.admissionNumber}
@@ -162,15 +162,12 @@ const AddStudentForm = ({ onClose, onStudentAdded }) => {
                 disabled={loading}
               />
               <small style={{ color: '#6b7280', marginTop: '4px', display: 'block' }}>
-                Format: BIS/001, BIS/002, etc.
+                Format: BIS/001, BIS/002, etc. (Must be unique)
               </small>
             </div>
             
             <div className="form-group">
-              <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <BookOpen size={16} />
-                Class *
-              </label>
+              <label>Class *</label>
               <select
                 value={formData.className}
                 onChange={(e) => setFormData({ ...formData, className: e.target.value })}
@@ -178,9 +175,40 @@ const AddStudentForm = ({ onClose, onStudentAdded }) => {
                 disabled={loading}
               >
                 <option value="">Select Class</option>
-                {classes.map(className => (
-                  <option key={className} value={className}>{className}</option>
-                ))}
+                <optgroup label="Pre-School">
+                  <option value="Pre-Nursery">Pre-Nursery</option>
+                  <option value="Playgroup">Playgroup</option>
+                  <option value="Nursery 1">Nursery 1</option>
+                  <option value="Nursery 2">Nursery 2</option>
+                  <option value="Nursery 3">Nursery 3</option>
+                </optgroup>
+                <optgroup label="Primary">
+                  <option value="Primary 1">Primary 1</option>
+                  <option value="Primary 2">Primary 2</option>
+                  <option value="Primary 3">Primary 3</option>
+                  <option value="Primary 4">Primary 4</option>
+                  <option value="Primary 5">Primary 5</option>
+                </optgroup>
+                <optgroup label="Junior Secondary School (JSS)">
+                  <option value="JSS 1">JSS 1</option>
+                  <option value="JSS 2">JSS 2</option>
+                  <option value="JSS 3">JSS 3</option>
+                </optgroup>
+                <optgroup label="SS1">
+                  <option value="SS1 Science">SS1 Science</option>
+                  <option value="SS1 Commercial">SS1 Commercial</option>
+                  <option value="SS1 Arts">SS1 Arts</option>
+                </optgroup>
+                <optgroup label="SS2">
+                  <option value="SS2 Science">SS2 Science</option>
+                  <option value="SS2 Commercial">SS2 Commercial</option>
+                  <option value="SS2 Arts">SS2 Arts</option>
+                </optgroup>
+                <optgroup label="SS3">
+                  <option value="SS3 Science">SS3 Science</option>
+                  <option value="SS3 Commercial">SS3 Commercial</option>
+                  <option value="SS3 Arts">SS3 Arts</option>
+                </optgroup>
               </select>
             </div>
             
@@ -205,17 +233,17 @@ const AddStudentForm = ({ onClose, onStudentAdded }) => {
               fontSize: '14px'
             }}>
               <p style={{ margin: 0, color: '#1e40af' }}>
-                ℹ️ Admission number will appear on all payment receipts.
+                ℹ️ Admission number must be unique and will appear on all payment receipts.
               </p>
             </div>
             
             <button 
               type="submit" 
               className="btn btn-primary" 
-              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+              style={{ width: '100%' }}
               disabled={loading}
             >
-              {loading ? 'Adding...' : 'Add Student'}
+              {loading ? 'Adding Student...' : 'Add Student'}
             </button>
           </form>
         </div>
