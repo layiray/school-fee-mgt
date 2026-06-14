@@ -1,3 +1,4 @@
+// src/components/Parent/PaymentHistory.js
 import React, { useState, useEffect } from 'react';
 import { listenToPayments } from '../../config/firebase';
 import { useAuth } from '../../context/AuthContext';
@@ -15,12 +16,16 @@ const PaymentHistory = () => {
   useEffect(() => {
     if (!user || !currentSession) return;
 
+    console.log("PaymentHistory - Loading from Firebase");
+    
     const unsubscribe = listenToPayments((allPayments) => {
-      // Filter for this parent's payments only
+      // Filter for this parent's payments only (using parentId)
       const filteredPayments = (allPayments || []).filter(p => 
         p.parentId === user.uid && p.sessionId === currentSession.id
       );
+      // Sort by date (newest first)
       filteredPayments.sort((a, b) => new Date(b.date) - new Date(a.date));
+      console.log("PaymentHistory - Filtered payments:", filteredPayments);
       setPayments(filteredPayments);
       setLoading(false);
     });

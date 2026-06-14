@@ -1,8 +1,7 @@
-// src/components/Admin/AllTransactions.js
 import React, { useState, useEffect } from 'react';
 import { useSession } from '../../context/SessionContext';
 import { listenToPayments } from '../../config/firebase';
-import { Filter, CreditCard, DollarSign } from 'lucide-react';
+import { Filter, CreditCard, DollarSign, Search } from 'lucide-react';
 
 const AllTransactions = () => {
   const { currentSession, sessions } = useSession();
@@ -10,6 +9,7 @@ const AllTransactions = () => {
   const [filteredPayments, setFilteredPayments] = useState([]);
   const [sessionFilter, setSessionFilter] = useState('current');
   const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     const unsubscribe = listenToPayments((allPayments) => {
@@ -22,18 +22,35 @@ const AllTransactions = () => {
   }, []);
 
   const filterPayments = (allPayments, filter) => {
+    let filtered = [];
     if (filter === 'current') {
-      setFilteredPayments(allPayments.filter(p => p.sessionId === currentSession?.id));
+      filtered = allPayments.filter(p => p.sessionId === currentSession?.id);
     } else if (filter === 'all') {
-      setFilteredPayments(allPayments);
+      filtered = allPayments;
     } else {
-      setFilteredPayments(allPayments.filter(p => p.sessionId === parseInt(filter)));
+      filtered = allPayments.filter(p => p.sessionId === parseInt(filter));
     }
+    
+    // Apply search filter if search term exists
+    if (searchTerm) {
+      filtered = filtered.filter(p => 
+        p.studentName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        p.admissionNumber?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        p.className?.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    }
+    
+    setFilteredPayments(filtered);
   };
 
   const handleFilterChange = (filter) => {
     setSessionFilter(filter);
     filterPayments(payments, filter);
+  };
+
+  const handleSearch = (e) => {
+    setSearchTerm(e.target.value);
+    filterPayments(payments, sessionFilter);
   };
 
   const getPaymentModeIcon = (mode) => {
@@ -63,6 +80,10 @@ const AllTransactions = () => {
     );
   }
 
+  const totalAmount = filteredPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+  const approvedAmount = filteredPayments.filter(p => p.status === 'approved').reduce((sum, p) => sum + (p.amount || 0), 0);
+  const pendingAmount = filteredPayments.filter(p => p.status === 'pending').reduce((sum, p) => sum + (p.amount || 0), 0);
+
   return (
     <div className="card">
       <div className="card-header">
@@ -82,15 +103,52 @@ const AllTransactions = () => {
               </option>
             ))}
           </select>
+          
+          <div style={{ position: 'relative', flex: 1, minWidth: '200px' }}>
+            <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#9ca3af' }} />
+            <input
+              type="text"
+              placeholder="Search by student name, admission number, or class..."
+              value={searchTerm}
+              onChange={handleSearch}
+              style={{ width: '100%', padding: '8px 12px 8px 36px', borderRadius: '8px', border: '1px solid #e5e7eb' }}
+            />
+          </div>
         </div>
       </div>
       <div className="card-body">
+        {/* Summary Cards */}
+        <div style={{ 
+          display: 'grid', 
+          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', 
+          gap: '12px', 
+          marginBottom: '20px' 
+        }}>
+          <div style={{ background: '#eff6ff', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#3b82f6' }}>{filteredPayments.length}</div>
+            <div style={{ fontSize: '11px', color: '#6b7280' }}>Total Transactions</div>
+          </div>
+          <div style={{ background: '#d1fae5', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#10b981' }}>₦{approvedAmount.toLocaleString()}</div>
+            <div style={{ fontSize: '11px', color: '#6b7280' }}>Approved Amount</div>
+          </div>
+          <div style={{ background: '#fef3c7', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#f59e0b' }}>₦{pendingAmount.toLocaleString()}</div>
+            <div style={{ fontSize: '11px', color: '#6b7280' }}>Pending Amount</div>
+          </div>
+          <div style={{ background: '#f3e8ff', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#8b5cf6' }}>₦{totalAmount.toLocaleString()}</div>
+            <div style={{ fontSize: '11px', color: '#6b7280' }}>Total Amount</div>
+          </div>
+        </div>
+        
         <div className="table-container">
           <table style={{ width: '100%' }}>
             <thead>
               <tr>
                 <th>Date</th>
                 <th>Student Name</th>
+                <th>Admission No</th>
                 <th>Class</th>
                 <th>Term</th>
                 <th>Amount</th>
@@ -104,9 +162,20 @@ const AllTransactions = () => {
                 <tr key={payment.id}>
                   <td>{new Date(payment.date).toLocaleDateString()}</td>
                   <td><strong>{payment.studentName}</strong></td>
+                  <td>
+                    <span style={{ 
+                      background: '#e0e7ff', 
+                      padding: '2px 8px', 
+                      borderRadius: '12px', 
+                      fontSize: '11px',
+                      fontWeight: '500'
+                    }}>
+                      {payment.admissionNumber || 'N/A'}
+                    </span>
+                  </td>
                   <td>{payment.className}</td>
                   <td>{payment.term}</td>
-                  <td style={{ fontWeight: 'bold', color: '#10b981' }}>₦{payment.amount.toLocaleString()}</td>
+                  <td style={{ fontWeight: 'bold', color: '#10b981' }}>₦{(payment.amount || 0).toLocaleString()}</td>
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
                       {getPaymentModeIcon(payment.paymentMode)}
@@ -125,7 +194,7 @@ const AllTransactions = () => {
               ))}
               {filteredPayments.length === 0 && (
                 <tr>
-                  <td colSpan="8" style={{ textAlign: 'center', padding: '40px', color: '#6b7280' }}>
+                  <td colSpan="9" style={{ textAlign: 'center', padding: '40px', color: '#6b7280' }}>
                     No transactions found
                   </td>
                 </tr>
@@ -133,18 +202,6 @@ const AllTransactions = () => {
             </tbody>
           </table>
         </div>
-        
-        {filteredPayments.length > 0 && (
-          <div style={{ 
-            marginTop: '16px', 
-            padding: '12px', 
-            background: '#d1fae5', 
-            borderRadius: '8px', 
-            fontSize: '14px' 
-          }}>
-            <strong>Total Amount:</strong> ₦{filteredPayments.reduce((sum, p) => sum + p.amount, 0).toLocaleString()}
-          </div>
-        )}
       </div>
     </div>
   );
