@@ -239,6 +239,54 @@ const ParentDashboard = () => {
   const onStudentAdded = () => {
     handleDataUpdate();
   };
+// Add this debug function to ParentDashboard
+const debugParentData = () => {
+  console.log('=== PARENT DEBUG DATA ===');
+  
+  // Check current session
+  const currentSession = JSON.parse(localStorage.getItem('currentSession'));
+  console.log('Current Session:', currentSession);
+  
+  // Check fee structures for current session
+  if (currentSession) {
+    const feeKey = `feeStructures_${currentSession.id}`;
+    const fees = localStorage.getItem(feeKey);
+    console.log(`Fee structures for ${currentSession.name}:`, fees ? JSON.parse(fees) : 'None');
+  }
+  
+  // Check payments
+  const payments = JSON.parse(localStorage.getItem('payments') || '[]');
+  console.log('Payments:', payments);
+  
+  // Check students
+  const students = JSON.parse(localStorage.getItem('students') || '[]');
+  console.log('Students:', students);
+  
+  toast.success('Parent debug data printed to console');
+};
+
+// Add a button in the UI (optional)
+<button onClick={debugParentData} className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '12px' }}>
+  Debug
+</button>
+
+// Add this function to reset session
+const resetSession = () => {
+  const sessionId = localStorage.getItem('currentSessionId');
+  if (sessionId) {
+    const confirmed = window.confirm(`Reset to session ID: ${sessionId}? This will reload the page.`);
+    if (confirmed) {
+      window.location.reload();
+    }
+  } else {
+    toast.error('No session found. Please create a session first.');
+  }
+};
+
+// Add a button in the UI
+<button onClick={resetSession} className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '12px' }}>
+  Reset Session
+</button>
 
   if (loading && students.length === 0) {
     return (

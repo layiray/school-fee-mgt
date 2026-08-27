@@ -14,18 +14,21 @@ const SessionManager = () => {
     endDate: ''
   });
 
-  const handleCreateSession = (e) => {
+// src/components/Admin/SessionManager.js - Update the create session function
+
+  const handleCreateSession = async (e) => {
     e.preventDefault();
     
     const sessionName = newSession.name || `${newSession.startYear}/${newSession.endYear}`;
     
-    // Check if session already exists
+    // Check if session already exists (in current sessions list)
     if (sessions.find(s => s.name === sessionName)) {
       toast.error('Session already exists!');
       return;
     }
     
-    createSession({
+    // Create the new session (this will preserve existing sessions)
+    await createSession({
       name: sessionName,
       startYear: newSession.startYear,
       endYear: newSession.endYear,
@@ -33,7 +36,6 @@ const SessionManager = () => {
       endDate: newSession.endDate
     });
     
-    toast.success(`Session ${sessionName} created successfully!`);
     setShowCreateForm(false);
     setNewSession({
       name: '',
@@ -155,10 +157,20 @@ const SessionManager = () => {
         </div>
       </div>
       
-      {/* Create Session Modal */}
+      {/* Create Session Modal - FIXED with proper overflow and z-index */}
       {showCreateForm && (
         <div className="modal-overlay" onClick={() => setShowCreateForm(false)}>
-          <div className="modal-content" style={{ maxWidth: '500px' }} onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content" style={{ 
+            maxWidth: '500px', 
+            width: '90%',
+            borderRadius: '12px',
+            backgroundColor: 'white',
+            margin: '20px auto',
+            maxHeight: '90vh',
+            overflowY: 'auto',
+            position: 'relative',
+            zIndex: 1001
+          }} onClick={(e) => e.stopPropagation()}>
             <div style={{ padding: '24px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
@@ -256,9 +268,19 @@ const SessionManager = () => {
                   </p>
                 </div>
                 
-                <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
-                  Create Session
-                </button>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>
+                    Create Session
+                  </button>
+                  <button 
+                    type="button" 
+                    onClick={() => setShowCreateForm(false)} 
+                    className="btn btn-secondary" 
+                    style={{ flex: 1 }}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </form>
             </div>
           </div>

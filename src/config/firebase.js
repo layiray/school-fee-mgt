@@ -363,34 +363,88 @@ export const listenToPayments = (callback) => {
 };
 
 // ============ SESSIONS ============
-export const saveSessions = async (sessions) => {
-  try {
-    await setDoc(doc(db, 'sessions', 'allSessions'), {
-      data: sessions,
-      updatedAt: new Date().toISOString()
+  export const saveSessions = async (sessions) => {
+    try {
+      // Get existing sessions first to merge, not overwrite
+      const existingSessions = await getSessions();
+      
+      // Merge the sessions (keep all unique sessions)
+      const mergedSessions = mergeSessions(existingSessions, sessions);
+      
+      await setDoc(doc(db, 'sessions', 'allSessions'), {
+        data: mergedSessions,
+        updatedAt: new Date().toISOString()
+      });
+      console.log("Sessions saved:", mergedSessions.length);
+      return { success: true };
+    } catch (error) {
+      console.error("Save sessions error:", error);
+      return { success: false, error: error.message };
+    }
+  };
+
+  // Helper function to merge sessions without duplicates
+  const mergeSessions = (existingSessions, newSessions) => {
+    const sessionMap = new Map();
+    
+    // Add existing sessions
+    existingSessions.forEach(session => {
+      sessionMap.set(session.id, session);
     });
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-};
+    
+    // Add/update new sessions
+    newSessions.forEach(session => {
+      sessionMap.set(session.id, session);
+    });
+    
+    return Array.from(sessionMap.values());
+  };
 
-export const getSessions = async () => {
-  try {
+  export const getSessions = async () => {
+    try {
+      const docRef = doc(db, 'sessions', 'allSessions');
+      const docSnap = await getDoc(docRef);
+      
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        // Check if data has the correct structure
+        if (data && data.data) {
+          return data.data;
+        } else if (data && Array.isArray(data)) {
+          // If data is directly an array (legacy format)
+          return data;
+        } else {
+          console.warn("Sessions data has unexpected format:", data);
+          return [];
+        }
+      }
+      return [];
+    } catch (error) {
+      console.error("Get sessions error:", error);
+      return [];
+    }
+  };
+
+  export const listenToSessions = (callback) => {
     const docRef = doc(db, 'sessions', 'allSessions');
-    const docSnap = await getDoc(docRef);
-    return docSnap.exists() ? docSnap.data().data : [];
-  } catch (error) {
-    return [];
-  }
-};
-
-export const listenToSessions = (callback) => {
-  const docRef = doc(db, 'sessions', 'allSessions');
-  return onSnapshot(docRef, (doc) => {
-    callback(doc.exists() ? doc.data().data : []);
-  });
-};
+    return onSnapshot(docRef, (doc) => {
+      if (doc.exists()) {
+        const data = doc.data();
+        if (data && data.data) {
+          callback(data.data);
+        } else if (data && Array.isArray(data)) {
+          callback(data);
+        } else {
+          callback([]);
+        }
+      } else {
+        callback([]);
+      }
+    }, (error) => {
+      console.error("Listen to sessions error:", error);
+      callback([]);
+    });
+  };
 
 // ============ EXTRA BILLS ============
 export const saveExtraBills = async (extraBills) => {

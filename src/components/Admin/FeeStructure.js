@@ -33,13 +33,23 @@ const FeeStructure = ({ onUpdate }) => {
     return () => unsubscribe();
   }, [currentSession]);
 
+
+
   const handleAddFee = async (e) => {
     e.preventDefault();
+    
+    // CRITICAL: Check if there's an active session
+    if (!currentSession) {
+      toast.error('No active session. Please select or create a session first.');
+      return;
+    }
+    
     if (!newFee.className || !newFee.term || !newFee.amount) {
       toast.error('Please fill all fields');
       return;
     }
 
+    // Check if fee already exists for this class and term in the current session
     const existingFee = feeStructures.find(
       f => f.className === newFee.className && f.term === newFee.term
     );
@@ -54,13 +64,19 @@ const FeeStructure = ({ onUpdate }) => {
       className: newFee.className,
       term: newFee.term,
       amount: parseFloat(newFee.amount),
-      sessionId: currentSession.id,
+      sessionId: currentSession.id,  // Use the current session ID
       sessionName: currentSession.name,
       createdAt: new Date().toISOString()
     };
     
     const updatedFees = [...feeStructures, newFeeObject];
     setFeeStructures(updatedFees);
+    
+    // Save with the current session ID
+    const storageKey = `feeStructures_${currentSession.id}`;
+    localStorage.setItem(storageKey, JSON.stringify(updatedFees));
+    
+    // Also save to Firebase
     await saveFeeStructures(currentSession.id, updatedFees);
     
     toast.success(`Fee structure added for ${newFee.className} - ${newFee.term}`);

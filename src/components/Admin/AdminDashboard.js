@@ -1,3 +1,4 @@
+// src/components/Admin/AdminDashboard.js
 import React, { useState, useEffect } from 'react';
 import SessionManager from './SessionManager';
 import FeeStructure from './FeeStructure';
@@ -7,6 +8,7 @@ import PendingApprovals from './PendingApprovals';
 import AllTransactions from './AllTransactions';
 import AdminManagement from './AdminManagement';
 import { useSession } from '../../context/SessionContext';
+import { useAuth } from '../../context/AuthContext';
 import { 
   Bus, 
   FileText, 
@@ -22,8 +24,8 @@ import {
   TrendingUp,
   Users,
   DollarSign,
-  CreditCard,
-  AlertCircle
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { 
@@ -33,6 +35,7 @@ import {
   getFeeStructures,
   getBusRoutes,
   getBusRegistrations,
+  getSessions,  // <-- ADD THIS IMPORT
   saveSessions,
   saveFeeStructures,
   saveBusRoutes,
@@ -48,13 +51,15 @@ import {
 } from '../../config/firebase';
 
 const AdminDashboard = () => {
-  const { currentSession, sessions, switchSession } = useSession();
+  const { currentSession, sessions, refreshCurrentSession } = useSession();
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('admins');
   const [refresh, setRefresh] = useState(false);
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [restoreData, setRestoreData] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [cloudStatus, setCloudStatus] = useState('connected');
+  const [sessionCheck, setSessionCheck] = useState(true);
   const [stats, setStats] = useState({
     studentCount: 0,
     paymentCount: 0,
@@ -69,6 +74,24 @@ const AdminDashboard = () => {
     rejectedCount: 0
   });
   const [recentPayments, setRecentPayments] = useState([]);
+
+  // Check session consistency
+  useEffect(() => {
+    const storedSessionId = localStorage.getItem('currentSessionId');
+    if (storedSessionId && currentSession) {
+      const storedId = parseInt(storedSessionId);
+      if (storedId !== currentSession.id) {
+        console.warn('Session mismatch detected!', {
+          stored: storedId,
+          current: currentSession.id
+        });
+        refreshCurrentSession();
+        setSessionCheck(false);
+      } else {
+        setSessionCheck(true);
+      }
+    }
+  }, [currentSession, refreshCurrentSession]);
 
   // Listen to real-time data updates
   useEffect(() => {
@@ -107,14 +130,20 @@ const AdminDashboard = () => {
     });
 
     // Listen to fee structures for current session
-    const unsubscribeFees = listenToFeeStructures(currentSession?.id, (fees) => {
-      setStats(prev => ({ ...prev, feeStructureCount: fees.length }));
-    });
+    let unsubscribeFees = null;
+    if (currentSession?.id) {
+      unsubscribeFees = listenToFeeStructures(currentSession.id, (fees) => {
+        setStats(prev => ({ ...prev, feeStructureCount: fees.length }));
+      });
+    }
 
     // Listen to bus routes for current session
-    const unsubscribeBus = listenToBusRoutes(currentSession?.id, (routes) => {
-      setStats(prev => ({ ...prev, busRouteCount: routes.length }));
-    });
+    let unsubscribeBus = null;
+    if (currentSession?.id) {
+      unsubscribeBus = listenToBusRoutes(currentSession.id, (routes) => {
+        setStats(prev => ({ ...prev, busRouteCount: routes.length }));
+      });
+    }
 
     // Listen to extra bills
     const unsubscribeExtra = listenToExtraBills((bills) => {
@@ -126,8 +155,8 @@ const AdminDashboard = () => {
       unsubscribeStudents();
       unsubscribePayments();
       unsubscribeUsers();
-      unsubscribeFees();
-      unsubscribeBus();
+      if (unsubscribeFees) unsubscribeFees();
+      if (unsubscribeBus) unsubscribeBus();
       unsubscribeExtra();
     };
   }, [currentSession]);
@@ -136,6 +165,77 @@ const AdminDashboard = () => {
   useEffect(() => {
     setStats(prev => ({ ...prev, sessionCount: sessions.length }));
   }, [sessions]);
+
+  // Debug function
+  const debugData = () => {
+    console.log('=== DEBUG DATA ===');
+    
+    const sessionsData = JSON.parse(localStorage.getItem('schoolSessions') || '[]');
+    console.log('Sessions:', sessionsData);
+    
+    const currentSessionData = JSON.parse(localStorage.getItem('currentSession'));
+    console.log('Current Session:', currentSessionData);
+    
+    sessionsData.forEach(session => {
+      const feeKey = `feeStructures_${session.id}`;
+      const fees = localStorage.getItem(feeKey);
+      console.log(`Fee structures for ${session.name} (${session.id}):`, fees ? JSON.parse(fees) : 'None');
+    });
+    
+    sessionsData.forEach(session => {
+      const busKey = `busRoutes_${session.id}`;
+      const routes = localStorage.getItem(busKey);
+      console.log(`Bus routes for ${session.name} (${session.id}):`, routes ? JSON.parse(routes) : 'None');
+    });
+    
+    toast.success('Debug data printed to console');
+  };
+
+  // Check all sessions in Firebase
+  const checkAllSessions = async () => {
+    try {
+      console.log("Checking sessions in Firebase...");
+      
+      // Check from Firebase
+      const firebaseSessions = await getSessions();
+      console.log('All sessions in Firebase:', firebaseSessions);
+      
+      // Check from localStorage
+      const localSessions = JSON.parse(localStorage.getItem('schoolSessions') || '[]');
+      console.log('All sessions in localStorage:', localSessions);
+      
+      // Check current session
+      const currentSessionData = JSON.parse(localStorage.getItem('currentSession'));
+      console.log('Current session in localStorage:', currentSessionData);
+      
+      // Show summary
+      const summary = {
+        firebaseCount: firebaseSessions.length,
+        localCount: localSessions.length,
+        currentSession: currentSessionData?.name || 'None',
+        firebaseSessions: firebaseSessions.map(s => s.name),
+        localSessions: localSessions.map(s => s.name)
+      };
+      
+      console.log('Session Summary:', summary);
+      
+      // Show toast with summary
+      toast.success(
+        `Firebase: ${summary.firebaseCount} sessions | Local: ${summary.localCount} sessions | Current: ${summary.currentSession}`,
+        { duration: 5000 }
+      );
+      
+      // If sessions don't match, show warning
+      if (summary.firebaseCount !== summary.localCount) {
+        toast.warning('Firebase and localStorage sessions count mismatch!');
+      }
+      
+      return summary;
+    } catch (error) {
+      console.error('Error checking sessions:', error);
+      toast.error('Failed to check sessions: ' + error.message);
+    }
+  };
 
   // Export all data
   const exportAllData = async () => {
@@ -322,6 +422,39 @@ const AdminDashboard = () => {
     }
   };
 
+  const recoverSessions = async () => {
+  try {
+    // Get sessions from localStorage
+    const localSessions = JSON.parse(localStorage.getItem('schoolSessions') || '[]');
+    console.log('Local sessions to recover:', localSessions);
+    
+    if (localSessions.length === 0) {
+      toast.warning('No sessions found in localStorage to recover');
+      return;
+    }
+    
+    // Save to Firebase
+    const result = await saveSessions(localSessions);
+    
+    if (result.success) {
+      toast.success(`Recovered ${localSessions.length} sessions to Firebase`);
+      // Refresh the page to show recovered sessions
+      setTimeout(() => window.location.reload(), 1500);
+    } else {
+      toast.error('Failed to recover sessions: ' + result.error);
+    }
+  } catch (error) {
+    console.error('Error recovering sessions:', error);
+    toast.error('Failed to recover sessions: ' + error.message);
+  }
+};
+
+// Add a button for this
+<button onClick={recoverSessions} className="btn btn-warning" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+  <RefreshCw size={16} />
+  Recover Sessions
+</button>
+
   const tabs = [
     { id: 'admins', label: 'Admin Management', icon: <Shield size={18} /> },
     { id: 'fees', label: 'Fee Structure', icon: <BookOpen size={18} /> },
@@ -331,6 +464,7 @@ const AdminDashboard = () => {
     { id: 'transactions', label: 'Transactions', icon: <History size={18} /> }
   ];
 
+  // If no session, show message (but after all hooks are called)
   if (!currentSession) {
     return (
       <div className="container">
@@ -342,6 +476,21 @@ const AdminDashboard = () => {
               Please create a session to continue
             </p>
             <SessionManager />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // If session mismatch, show message (but after all hooks are called)
+  if (!sessionCheck) {
+    return (
+      <div className="container">
+        <div className="card">
+          <div className="card-body" style={{ textAlign: 'center', padding: '40px' }}>
+            <h3>Session Mismatch Detected</h3>
+            <p>Refreshing session data...</p>
+            <div className="spinner"></div>
           </div>
         </div>
       </div>
@@ -366,7 +515,7 @@ const AdminDashboard = () => {
         gap: '12px'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          {cloudStatus === 'connected' ? <Database size={20} color="#10b981" /> : cloudStatus === 'syncing' ? <TrendingUp size={20} color="#f59e0b" className="spinner" /> : <AlertCircle size={20} color="#ef4444" />}
+          {cloudStatus === 'connected' ? <Database size={20} color="#10b981" /> : cloudStatus === 'syncing' ? <RefreshCw size={20} color="#f59e0b" className="spinner" /> : <AlertCircle size={20} color="#ef4444" />}
           <div>
             <strong style={{ fontSize: '14px' }}>
               {cloudStatus === 'connected' ? 'Data Synced to Cloud' : cloudStatus === 'syncing' ? 'Syncing to Cloud...' : 'Cloud Sync Disconnected'}
@@ -376,15 +525,25 @@ const AdminDashboard = () => {
             </p>
           </div>
         </div>
-        {cloudStatus !== 'connected' && (
-          <button onClick={migrateToCloud} disabled={isSyncing} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Database size={16} />
-            {isSyncing ? 'Syncing...' : 'Enable Cloud Sync'}
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          {cloudStatus !== 'connected' && (
+            <button onClick={migrateToCloud} disabled={isSyncing} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Database size={16} />
+              {isSyncing ? 'Syncing...' : 'Enable Cloud Sync'}
+            </button>
+          )}
+          <button onClick={debugData} className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <AlertCircle size={16} />
+            Debug Data
           </button>
-        )}
+          <button onClick={checkAllSessions} className="btn btn-info" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Database size={16} />
+            Check Sessions
+          </button>
+        </div>
       </div>
       
-      {/* Statistics Cards - Real-time */}
+      {/* Statistics Cards */}
       <div style={{ 
         display: 'grid', 
         gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', 
@@ -413,35 +572,6 @@ const AdminDashboard = () => {
           <h4>Total Users</h4>
           <div className="amount" style={{ fontSize: '28px' }}>{stats.userCount}</div>
           <Users size={20} style={{ marginTop: '8px', color: '#8b5cf6' }} />
-        </div>
-      </div>
-      
-      {/* Secondary Statistics */}
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', 
-        gap: '12px', 
-        marginBottom: '24px' 
-      }}>
-        <div style={{ background: '#f8f9fa', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#3b82f6' }}>{stats.approvedCount}</div>
-          <div style={{ fontSize: '11px', color: '#6b7280' }}>Approved Payments</div>
-        </div>
-        <div style={{ background: '#f8f9fa', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#f59e0b' }}>{stats.pendingCount}</div>
-          <div style={{ fontSize: '11px', color: '#6b7280' }}>Pending Payments</div>
-        </div>
-        <div style={{ background: '#f8f9fa', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#ef4444' }}>{stats.rejectedCount}</div>
-          <div style={{ fontSize: '11px', color: '#6b7280' }}>Rejected Payments</div>
-        </div>
-        <div style={{ background: '#f8f9fa', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#8b5cf6' }}>{stats.feeStructureCount}</div>
-          <div style={{ fontSize: '11px', color: '#6b7280' }}>Fee Structures</div>
-        </div>
-        <div style={{ background: '#f8f9fa', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#10b981' }}>{stats.busRouteCount}</div>
-          <div style={{ fontSize: '11px', color: '#6b7280' }}>Bus Routes</div>
         </div>
       </div>
       

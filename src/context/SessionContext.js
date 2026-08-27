@@ -1,3 +1,4 @@
+// src/context/SessionContext.js
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import { getSessions, saveSessions, listenToSessions } from '../config/firebase';
 import toast from 'react-hot-toast';
@@ -16,32 +17,31 @@ export const SessionProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Listen for real-time session updates
+    // Listen for real-time session updates from Firebase
     const unsubscribe = listenToSessions((sessionData) => {
       if (sessionData && sessionData.length > 0) {
         setSessions(sessionData);
         
-        // Find active session or current session
-        const activeSession = sessionData.find(s => s.isActive);
-        const storedCurrentId = localStorage.getItem('currentSessionId');
+        // Try to find the session from localStorage first
+        const storedSessionId = localStorage.getItem('currentSessionId');
+        let activeSession = sessionData.find(s => s.id === parseInt(storedSessionId));
+        
+        // If not found, find the active session
+        if (!activeSession) {
+          activeSession = sessionData.find(s => s.isActive);
+        }
+        
+        // If still not found, use the first session
+        if (!activeSession && sessionData.length > 0) {
+          activeSession = sessionData[0];
+        }
         
         if (activeSession) {
           setCurrentSession(activeSession);
           localStorage.setItem('currentSessionId', activeSession.id);
-        } else if (storedCurrentId) {
-          const savedSession = sessionData.find(s => s.id.toString() === storedCurrentId);
-          if (savedSession) {
-            setCurrentSession(savedSession);
-          } else {
-            setCurrentSession(sessionData[0]);
-            localStorage.setItem('currentSessionId', sessionData[0].id);
-          }
-        } else if (sessionData.length > 0) {
-          setCurrentSession(sessionData[0]);
-          localStorage.setItem('currentSessionId', sessionData[0].id);
         }
       } else {
-        // Create default session if none exists
+        // Only create default session if absolutely no sessions exist
         const defaultSession = {
           id: Date.now(),
           name: '2024/2025',
@@ -55,6 +55,7 @@ export const SessionProvider = ({ children }) => {
         setSessions([defaultSession]);
         setCurrentSession(defaultSession);
         saveSessions([defaultSession]);
+        localStorage.setItem('currentSessionId', defaultSession.id);
       }
       setLoading(false);
     });
@@ -70,16 +71,28 @@ export const SessionProvider = ({ children }) => {
       createdAt: new Date().toISOString()
     };
     
-    const updatedSessions = [...sessions, newSession];
+    // Get current sessions first
+    const currentSessions = await getSessions();
+    
+    // Add new session to existing sessions
+    const updatedSessions = [...currentSessions, newSession];
     setSessions(updatedSessions);
-    await saveSessions(updatedSessions);
-    toast.success(`Session ${newSession.name} created successfully!`);
+    
+    // Save all sessions (preserving existing ones)
+    const result = await saveSessions(updatedSessions);
+    
+    if (result.success) {
+      toast.success(`Session ${newSession.name} created successfully!`);
+    } else {
+      toast.error('Failed to create session: ' + result.error);
+    }
     return newSession;
   };
 
   const switchSession = async (sessionId) => {
     const session = sessions.find(s => s.id === sessionId);
     if (session) {
+      // Deactivate all sessions first
       const updatedSessions = sessions.map(s => ({
         ...s,
         isActive: s.id === sessionId
@@ -88,9 +101,18 @@ export const SessionProvider = ({ children }) => {
       setSessions(updatedSessions);
       setCurrentSession(session);
       localStorage.setItem('currentSessionId', session.id);
-      await saveSessions(updatedSessions);
-      toast.success(`Switched to ${session.name} session`);
-      return true;
+      
+      const result = await saveSessions(updatedSessions);
+      
+      if (result.success) {
+        // Force reload of data by dispatching an event
+        window.dispatchEvent(new CustomEvent('sessionChanged', { detail: session }));
+        toast.success(`Switched to ${session.name} session`);
+        return true;
+      } else {
+        toast.error('Failed to switch session: ' + result.error);
+        return false;
+      }
     }
     return false;
   };
@@ -100,8 +122,20 @@ export const SessionProvider = ({ children }) => {
       session.id === sessionId ? { ...session, isArchived: true, isActive: false } : session
     );
     setSessions(updatedSessions);
-    await saveSessions(updatedSessions);
-    toast.success('Session archived');
+    
+    const result = await saveSessions(updatedSessions);
+    
+    if (result.success) {
+      if (currentSession?.id === sessionId) {
+        const newActiveSession = updatedSessions.find(s => s.isActive && !s.isArchived);
+        if (newActiveSession) {
+          switchSession(newActiveSession.id);
+        }
+      }
+      toast.success('Session archived');
+    } else {
+      toast.error('Failed to archive session: ' + result.error);
+    }
   };
 
   const updateSession = async (sessionId, updates) => {
@@ -109,11 +143,30 @@ export const SessionProvider = ({ children }) => {
       session.id === sessionId ? { ...session, ...updates } : session
     );
     setSessions(updatedSessions);
-    await saveSessions(updatedSessions);
     
-    if (currentSession?.id === sessionId) {
-      setCurrentSession({ ...currentSession, ...updates });
+    const result = await saveSessions(updatedSessions);
+    
+    if (result.success) {
+      if (currentSession?.id === sessionId) {
+        setCurrentSession({ ...currentSession, ...updates });
+        localStorage.setItem('currentSessionId', sessionId);
+      }
+      toast.success('Session updated');
+    } else {
+      toast.error('Failed to update session: ' + result.error);
     }
+  };
+
+  const refreshCurrentSession = () => {
+    const storedSessionId = localStorage.getItem('currentSessionId');
+    if (storedSessionId) {
+      const session = sessions.find(s => s.id === parseInt(storedSessionId));
+      if (session) {
+        setCurrentSession(session);
+        return session;
+      }
+    }
+    return currentSession;
   };
 
   return (
@@ -124,7 +177,8 @@ export const SessionProvider = ({ children }) => {
       createSession,
       switchSession,
       archiveSession,
-      updateSession
+      updateSession,
+      refreshCurrentSession
     }}>
       {children}
     </SessionContext.Provider>
