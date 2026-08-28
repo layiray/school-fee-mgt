@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+// src/components/Parent/ParentDashboard.js
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { useSession } from '../../context/SessionContext';
 import { 
   listenToStudents, 
   listenToPayments, 
@@ -8,37 +8,36 @@ import {
   listenToExtraBills,
   listenToBusRegistrations,
   listenToBusRoutes,
-  saveStudent,
-  addStudentToParent
+  getSessions,
 } from '../../config/firebase';
 import PaymentForm from './PaymentForm';
 import PaymentHistory from './PaymentHistory';
 import StudentBalanceSummary from './StudentBalanceSummary';
 import AddStudentForm from './AddStudentForm';
-import { DollarSign, Clock, Users, Calendar, PlusCircle, CreditCard, Receipt } from 'lucide-react';
+import { DollarSign, Clock, Users, Calendar, PlusCircle, RefreshCw, AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const ParentDashboard = () => {
   const { user } = useAuth();
-  const { currentSession } = useSession();
   
   // State declarations
+  const [currentSession, setCurrentSession] = useState(null);
+  const [sessions, setSessions] = useState([]);
   const [allPayments, setAllPayments] = useState([]);
   const [feeStructures, setFeeStructures] = useState([]);
   const [students, setStudents] = useState([]);
-  const [refresh, setRefresh] = useState(false);
   const [showAddStudent, setShowAddStudent] = useState(false);
   const [loading, setLoading] = useState(true);
   const [extraBills, setExtraBills] = useState([]);
   const [busRegistrations, setBusRegistrations] = useState([]);
   const [busRoutes, setBusRoutes] = useState([]);
-  const [activeMobileView, setActiveMobileView] = useState('payment');
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-  const [dataLoaded, setDataLoaded] = useState({
-    students: false,
-    payments: false,
-    feeStructures: false
-  });
+  const [isSyncing, setIsSyncing] = useState(false);
+  
+  // Refs
+  const mountedRef = useRef(true);
+  const unsubscribeRefs = useRef([]);
+  const loadTimeoutRef = useRef(null);
 
   // Mobile responsiveness
   useEffect(() => {
@@ -49,86 +48,296 @@ const ParentDashboard = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Load all data from Firebase - NO localStorage
-  useEffect(() => {
-    if (!user || !user.uid) {
-      console.log("No user authenticated");
+  // ============================================
+  // CORE FUNCTION: Get the active session from Firebase
+  // ============================================
+  const getActiveSessionFromFirebase = useCallback(async () => {
+    try {
+      console.log('🔍 Fetching sessions from Firebase...');
+      const fbSessions = await getSessions();
+      console.log('📦 Firebase sessions:', fbSessions);
+      
+      if (!fbSessions || fbSessions.length === 0) {
+        console.log('❌ No sessions in Firebase');
+        return null;
+      }
+      
+      // Find active session (isActive === true and not archived)
+      let active = fbSessions.find(s => s.isActive === true && s.isArchived !== true);
+      
+      if (active) {
+        console.log(`✅ Active session found: ${active.name} (${active.id})`);
+        return active;
+      }
+      
+      // If no active session, find the first non-archived session
+      const firstAvailable = fbSessions.find(s => s.isArchived !== true);
+      if (firstAvailable) {
+        console.log(`⚠️ No active session, using first available: ${firstAvailable.name}`);
+        return firstAvailable;
+      }
+      
+      console.log('❌ No available sessions found');
+      return null;
+    } catch (error) {
+      console.error('❌ Error fetching sessions:', error);
+      return null;
+    }
+  }, []);
+
+  // ============================================
+  // CORE FUNCTION: Load all data for a session
+  // ============================================
+  const loadDataForSession = useCallback((session) => {
+    if (!session || !user?.uid) {
+      console.log('❌ Cannot load data: No session or user');
       return;
     }
 
-    if (!currentSession) {
-      console.log("No current session");
-      return;
-    }
+    // Clean up previous listeners
+    unsubscribeRefs.current.forEach(unsub => {
+      try { unsub(); } catch (e) { /* ignore */ }
+    });
+    unsubscribeRefs.current = [];
 
-    console.log("=== ParentDashboard Loading from Firebase ===");
+    console.log(`📊 Loading data for session: ${session.name} (${session.id})`);
 
-    // Listen to students from Firebase
-    const unsubscribeStudents = listenToStudents((allStudents) => {
+    // Update state
+    setCurrentSession(session);
+    localStorage.setItem('currentSessionId', String(session.id));
+
+    let isMounted = true;
+
+    // 1. Listen to students
+    const unsubStudents = listenToStudents((allStudents) => {
+      if (!isMounted) return;
       const parentStudents = allStudents.filter(s => s.parentId === user.uid);
-      console.log("Parent's students:", parentStudents);
+      console.log(`👨‍👩‍👧 Parent has ${parentStudents.length} students`);
       setStudents(parentStudents);
-      setDataLoaded(prev => ({ ...prev, students: true }));
+      setLoading(false);
     });
+    unsubscribeRefs.current.push(unsubStudents);
 
-    // Listen to all payments from Firebase
-    const unsubscribePayments = listenToPayments((payments) => {
-      console.log("All payments from Firebase:", payments);
-      setAllPayments(payments || []);
-      setDataLoaded(prev => ({ ...prev, payments: true }));
+    // 2. Listen to payments for this session
+    const unsubPayments = listenToPayments((payments) => {
+      if (!isMounted) return;
+      const sessionPayments = payments.filter(p => p.sessionId === session.id);
+      console.log(`💰 ${sessionPayments.length} payments for this session`);
+      setAllPayments(sessionPayments);
     });
+    unsubscribeRefs.current.push(unsubPayments);
 
-    // Listen to fee structures for current session from Firebase
-    const unsubscribeFees = listenToFeeStructures(currentSession.id, (fees) => {
-      console.log(`Fee structures for session ${currentSession.id}:`, fees);
+    // 3. Listen to fee structures for this session
+    const unsubFees = listenToFeeStructures(session.id, (fees) => {
+      if (!isMounted) return;
+      console.log(`📚 ${fees?.length || 0} fee structures loaded`);
       setFeeStructures(fees || []);
-      setDataLoaded(prev => ({ ...prev, feeStructures: true }));
     });
-    
-    // Listen to bus routes
-    const unsubscribeBusRoutes = listenToBusRoutes(currentSession.id, (routes) => {
+    unsubscribeRefs.current.push(unsubFees);
+
+    // 4. Listen to bus routes for this session
+    const unsubBusRoutes = listenToBusRoutes(session.id, (routes) => {
+      if (!isMounted) return;
+      console.log(`🚌 ${routes?.length || 0} bus routes loaded`);
       setBusRoutes(routes || []);
     });
-    
-    // Listen to extra bills
-    const unsubscribeExtra = listenToExtraBills((bills) => {
+    unsubscribeRefs.current.push(unsubBusRoutes);
+
+    // 5. Listen to extra bills
+    const unsubExtra = listenToExtraBills((bills) => {
+      if (!isMounted) return;
       setExtraBills(bills || []);
     });
-    
-    // Listen to bus registrations
-    const unsubscribeBusReg = listenToBusRegistrations((registrations) => {
+    unsubscribeRefs.current.push(unsubExtra);
+
+    // 6. Listen to bus registrations
+    const unsubBusReg = listenToBusRegistrations((registrations) => {
+      if (!isMounted) return;
       setBusRegistrations(registrations || []);
     });
-    
-    // Set loading false after data is loaded
-    const timer = setTimeout(() => {
-      if (dataLoaded.students && dataLoaded.payments && dataLoaded.feeStructures) {
+    unsubscribeRefs.current.push(unsubBusReg);
+
+    // Safety timer
+    if (loadTimeoutRef.current) {
+      clearTimeout(loadTimeoutRef.current);
+    }
+    loadTimeoutRef.current = setTimeout(() => {
+      if (isMounted) {
         setLoading(false);
-      } else {
-        // Force loading off after 3 seconds even if not all data loaded
-        setTimeout(() => setLoading(false), 3000);
+        console.log('⏰ Data load completed via safety timer');
       }
-    }, 2000);
+    }, 5000);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user]);
+
+  // ============================================
+  // CORE FUNCTION: Force refresh session and data
+  // ============================================
+  const refreshSessionAndData = useCallback(async () => {
+    if (isSyncing) return;
+    
+    setIsSyncing(true);
+    setLoading(true);
+    
+    const toastId = toast.loading('Loading session data...');
+    
+    try {
+      // 1. Get active session from Firebase
+      const activeSession = await getActiveSessionFromFirebase();
+      
+      if (activeSession) {
+        // 2. Update localStorage
+        localStorage.setItem('currentSessionId', String(activeSession.id));
+        
+        // 3. Load data for this session
+        loadDataForSession(activeSession);
+        
+        // 4. Dispatch event for other components
+        window.dispatchEvent(new CustomEvent('sessionChanged', { 
+          detail: { 
+            id: activeSession.id,
+            name: activeSession.name,
+            ...activeSession
+          } 
+        }));
+        
+        toast.success(`Session: ${activeSession.name}`, { id: toastId });
+        console.log(`✅ Successfully loaded session: ${activeSession.name}`);
+      } else {
+        toast.error('No active session found', { id: toastId });
+        setCurrentSession(null);
+        setLoading(false);
+        console.log('❌ No active session found');
+      }
+    } catch (error) {
+      console.error('❌ Error refreshing:', error);
+      toast.error('Failed to load session', { id: toastId });
+      setLoading(false);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [isSyncing, getActiveSessionFromFirebase, loadDataForSession]);
+
+  // ============================================
+  // INITIALIZATION - Runs once on mount
+  // ============================================
+  useEffect(() => {
+    mountedRef.current = true;
+    
+    const init = async () => {
+      console.log('🚀 ParentDashboard: Initializing...');
+      
+      // First, check if we have a stored session ID
+      const storedId = localStorage.getItem('currentSessionId');
+      console.log(`📌 Stored session ID: ${storedId}`);
+      
+      // Always fetch from Firebase to get the latest
+      const activeSession = await getActiveSessionFromFirebase();
+      
+      if (activeSession) {
+        // Check if the stored ID matches the Firebase active session
+        if (storedId && parseInt(storedId) !== activeSession.id) {
+          console.log(`🔄 Session mismatch! Stored: ${storedId}, Firebase: ${activeSession.id}`);
+          // Update localStorage with the correct session
+          localStorage.setItem('currentSessionId', String(activeSession.id));
+        }
+        
+        // Load data for the active session
+        loadDataForSession(activeSession);
+      } else {
+        console.log('❌ No active session found on init');
+        setLoading(false);
+      }
+    };
+    
+    init();
     
     return () => {
-      unsubscribeStudents();
-      unsubscribePayments();
-      unsubscribeFees();
-      unsubscribeBusRoutes();
-      unsubscribeExtra();
-      unsubscribeBusReg();
-      clearTimeout(timer);
+      mountedRef.current = false;
+      unsubscribeRefs.current.forEach(unsub => {
+        try { unsub(); } catch (e) { /* ignore */ }
+      });
+      if (loadTimeoutRef.current) {
+        clearTimeout(loadTimeoutRef.current);
+      }
     };
-  }, [user, currentSession]);
+  }, [getActiveSessionFromFirebase, loadDataForSession]);
 
-  // Helper function to get tuition fee
+  // ============================================
+  // POLLING: Check for session changes every 10 seconds
+  // ============================================
+  useEffect(() => {
+    if (!currentSession) return;
+    
+    const interval = setInterval(async () => {
+      try {
+        const fbSessions = await getSessions();
+        if (!fbSessions || fbSessions.length === 0) return;
+        
+        const active = fbSessions.find(s => s.isActive === true && s.isArchived !== true);
+        
+        if (active && active.id !== currentSession.id) {
+          console.log(`🔄 POLLING: Session changed from ${currentSession.id} to ${active.id}`);
+          // Session changed! Refresh everything
+          await refreshSessionAndData();
+        }
+      } catch (error) {
+        // Silent fail
+      }
+    }, 10000); // Check every 10 seconds
+    
+    return () => clearInterval(interval);
+  }, [currentSession, refreshSessionAndData]);
+
+  // ============================================
+  // EVENT LISTENER: Listen for session changes from admin
+  // ============================================
+  useEffect(() => {
+    const handleSessionChange = async (event) => {
+      const newSession = event.detail;
+      console.log('📢 Session change event:', newSession);
+      
+      if (newSession && newSession.id !== currentSession?.id) {
+        toast.custom((t) => (
+          <div style={{
+            background: '#3b82f6',
+            color: 'white',
+            padding: '12px 20px',
+            borderRadius: '8px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px'
+          }}>
+            <span>🔄</span>
+            <span>Session changed to: <strong>{newSession.name}</strong></span>
+          </div>
+        ), { duration: 3000 });
+        
+        // Refresh everything
+        await refreshSessionAndData();
+      }
+    };
+    
+    window.addEventListener('sessionChanged', handleSessionChange);
+    
+    return () => {
+      window.removeEventListener('sessionChanged', handleSessionChange);
+    };
+  }, [currentSession, refreshSessionAndData]);
+
+  // ============================================
+  // Helper Functions
+  // ============================================
   const getTuitionFee = (className, term) => {
     if (!feeStructures || feeStructures.length === 0) return 0;
     const fee = feeStructures.find(f => f.className === className && f.term === term);
     return fee ? fee.amount : 0;
   };
 
-  // Helper function to get bus fee
   const getBusFee = (studentId, term) => {
     const registration = busRegistrations.find(
       r => r.studentId === studentId && r.term === term && r.usesBus
@@ -136,7 +345,6 @@ const ParentDashboard = () => {
     return registration ? registration.busFee : 0;
   };
 
-  // Get total paid for a specific student in a specific term (approved payments only)
   const getStudentTermPaid = (studentId, term) => {
     const relevantPayments = allPayments.filter(p => 
       p.studentId === studentId && 
@@ -146,7 +354,6 @@ const ParentDashboard = () => {
     return relevantPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
   };
 
-  // Get total paid for a student across all terms
   const getStudentTotalPaid = (studentId) => {
     const relevantPayments = allPayments.filter(p => 
       p.studentId === studentId && p.status === 'approved'
@@ -154,12 +361,10 @@ const ParentDashboard = () => {
     return relevantPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
   };
 
-  // Get unpaid extra bills for a student
   const getUnpaidExtraBills = (studentId) => {
     return extraBills.filter(b => b.studentId === studentId && !b.isPaid);
   };
 
-  // Build complete student balance data
   const getStudentsWithBalances = () => {
     const studentsWithData = students.map(student => {
       const terms = ['First Term', 'Second Term', 'Third Term'];
@@ -211,25 +416,22 @@ const ParentDashboard = () => {
     return studentsWithData;
   };
 
-  // Calculate dashboard totals from Firebase data
   const studentsWithBalances = getStudentsWithBalances();
   const parentStudentIds = students.map(s => s.id);
   
-  // Total paid across all parent's students from Firebase
   const totalPaid = allPayments
     .filter(p => parentStudentIds.includes(p.studentId) && p.status === 'approved')
     .reduce((sum, p) => sum + (p.amount || 0), 0);
   
-  // Pending payments count
   const pendingPayments = allPayments
     .filter(p => parentStudentIds.includes(p.studentId) && p.status === 'pending')
     .length;
-  
-  // Total session fee across all students
-  const totalSessionFee = studentsWithBalances.reduce((total, student) => total + (student.totalFeeForSession || 0), 0);
 
   const handleDataUpdate = () => {
-    setRefresh(!refresh);
+    // Reload data without changing session
+    if (currentSession) {
+      loadDataForSession(currentSession);
+    }
   };
 
   const handleAddStudent = () => {
@@ -239,122 +441,114 @@ const ParentDashboard = () => {
   const onStudentAdded = () => {
     handleDataUpdate();
   };
-// Add this debug function to ParentDashboard
-const debugParentData = () => {
-  console.log('=== PARENT DEBUG DATA ===');
-  
-  // Check current session
-  const currentSession = JSON.parse(localStorage.getItem('currentSession'));
-  console.log('Current Session:', currentSession);
-  
-  // Check fee structures for current session
-  if (currentSession) {
-    const feeKey = `feeStructures_${currentSession.id}`;
-    const fees = localStorage.getItem(feeKey);
-    console.log(`Fee structures for ${currentSession.name}:`, fees ? JSON.parse(fees) : 'None');
-  }
-  
-  // Check payments
-  const payments = JSON.parse(localStorage.getItem('payments') || '[]');
-  console.log('Payments:', payments);
-  
-  // Check students
-  const students = JSON.parse(localStorage.getItem('students') || '[]');
-  console.log('Students:', students);
-  
-  toast.success('Parent debug data printed to console');
-};
 
-// Add a button in the UI (optional)
-<button onClick={debugParentData} className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '12px' }}>
-  Debug
-</button>
-
-// Add this function to reset session
-const resetSession = () => {
-  const sessionId = localStorage.getItem('currentSessionId');
-  if (sessionId) {
-    const confirmed = window.confirm(`Reset to session ID: ${sessionId}? This will reload the page.`);
-    if (confirmed) {
-      window.location.reload();
-    }
-  } else {
-    toast.error('No session found. Please create a session first.');
-  }
-};
-
-// Add a button in the UI
-<button onClick={resetSession} className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '12px' }}>
-  Reset Session
-</button>
-
-  if (loading && students.length === 0) {
+  // ============================================
+  // RENDER
+  // ============================================
+  
+  // Loading state
+  if (loading && students.length === 0 && !isSyncing) {
     return (
       <div className="container">
         <div className="card">
           <div className="card-body" style={{ textAlign: 'center', padding: '60px' }}>
             <div className="spinner"></div>
             <p style={{ marginTop: '20px', color: '#6b7280' }}>Loading your dashboard...</p>
+            {currentSession && (
+              <p style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '8px' }}>
+                Session: {currentSession.name}
+              </p>
+            )}
           </div>
         </div>
       </div>
     );
   }
 
-  if (!currentSession) {
+  // No session state
+  if (!currentSession && !loading) {
     return (
       <div className="container">
         <div className="card">
           <div className="card-body" style={{ textAlign: 'center', padding: '60px' }}>
-            <Calendar size={48} style={{ margin: '0 auto 16px', color: '#9ca3af' }} />
+            <AlertCircle size={48} style={{ margin: '0 auto 16px', color: '#ef4444' }} />
             <h3>No Active Session</h3>
             <p style={{ color: '#6b7280', marginTop: '8px' }}>
               Please contact the administrator to set up the current academic session.
             </p>
+            <button 
+              onClick={refreshSessionAndData} 
+              className="btn btn-primary"
+              style={{ marginTop: '20px' }}
+              disabled={isSyncing}
+            >
+              <RefreshCw size={16} className={isSyncing ? 'spinner' : ''} />
+              {isSyncing ? 'Loading...' : 'Check for Sessions'}
+            </button>
           </div>
         </div>
       </div>
     );
   }
 
+  // Main render
   return (
     <div className="container" style={{ padding: isMobile ? '12px' : '20px' }}>
+      {/* Session Indicator Banner */}
+      <div style={{ 
+        background: isSyncing ? '#fef3c7' : currentSession?.isActive ? '#d1fae5' : '#eff6ff',
+        padding: '12px 16px', 
+        borderRadius: '8px', 
+        marginBottom: '16px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: '8px',
+        border: `1px solid ${isSyncing ? '#f59e0b' : currentSession?.isActive ? '#10b981' : '#3b82f6'}`
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Calendar size={16} color={isSyncing ? '#f59e0b' : currentSession?.isActive ? '#10b981' : '#3b82f6'} />
+          <span style={{ fontSize: '14px' }}>
+            <strong>Active Session:</strong> {currentSession?.name || 'Loading...'}
+            {isSyncing && <span style={{ color: '#f59e0b', marginLeft: '8px' }}>(Updating...)</span>}
+            {currentSession?.isActive && !isSyncing && (
+              <span style={{ color: '#10b981', marginLeft: '8px' }}>✅ Active</span>
+            )}
+          </span>
+          <span style={{ fontSize: '11px', color: '#6b7280', marginLeft: '8px' }}>
+            (ID: {currentSession?.id || 'N/A'})
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: '12px', color: '#6b7280' }}>
+            {feeStructures.length > 0 ? (
+              <span style={{ color: '#10b981' }}>✅ {feeStructures.length} fees loaded</span>
+            ) : (
+              <span style={{ color: '#f59e0b' }}>⏳ No fee structures</span>
+            )}
+          </div>
+          <button 
+            onClick={refreshSessionAndData} 
+            className="btn btn-secondary"
+            style={{ padding: '4px 12px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+            disabled={isSyncing}
+          >
+            <RefreshCw size={14} className={isSyncing ? 'spinner' : ''} />
+            {isSyncing ? 'Syncing...' : 'Refresh'}
+          </button>
+        </div>
+      </div>
+      
       {/* Welcome Banner */}
       <div className="welcome-banner" style={{ 
         padding: isMobile ? '16px' : '20px',
         marginBottom: isMobile ? '16px' : '24px'
       }}>
-        <h2 style={{ fontSize: isMobile ? '1.25rem' : '1.5rem' }}>Welcome, {user?.name}!</h2>
+        <h2 style={{ fontSize: isMobile ? '1.25rem' : '1.5rem' }}>Welcome, {user?.name || 'Parent'}!</h2>
         <p style={{ fontSize: '0.75rem', marginTop: '4px', opacity: 0.9 }}>
           Manage your children's school fees
         </p>
-      </div>
-      
-      {/* Session Info */}
-      <div className="session-banner" style={{ 
-        padding: isMobile ? '12px' : '16px',
-        marginBottom: isMobile ? '16px' : '24px',
-        flexDirection: isMobile ? 'column' : 'row'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <Calendar size={isMobile ? 18 : 20} />
-          <div>
-            <strong style={{ fontSize: isMobile ? '0.75rem' : '0.875rem' }}>{currentSession.name} Session</strong>
-            <p style={{ fontSize: '0.65rem', marginTop: '2px' }}>
-              ID: {currentSession.id}
-            </p>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: '16px', justifyContent: 'space-around' }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: isMobile ? '0.875rem' : '1rem', fontWeight: 'bold' }}>₦{totalPaid.toLocaleString()}</div>
-            <div style={{ fontSize: '0.6rem' }}>Paid</div>
-          </div>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: isMobile ? '0.875rem' : '1rem', fontWeight: 'bold' }}>₦{(totalSessionFee - totalPaid).toLocaleString()}</div>
-            <div style={{ fontSize: '0.6rem' }}>Due</div>
-          </div>
-        </div>
       </div>
       
       {/* Stats Cards */}
@@ -377,66 +571,11 @@ const resetSession = () => {
         </div>
         
         <div className="summary-card" style={{ borderLeftColor: '#f59e0b' }}>
-          <h4>Pending</h4>
+          <h4>Pending Approvals</h4>
           <div className="amount">{pendingPayments}</div>
           <Clock size={18} style={{ marginTop: '6px', color: '#f59e0b' }} />
         </div>
       </div>
-      
-      {/* Mobile Toggle */}
-      {isMobile && (
-        <div style={{ 
-          display: 'flex', 
-          gap: '12px', 
-          marginBottom: '20px',
-          background: '#f3f4f6',
-          padding: '6px',
-          borderRadius: '12px'
-        }}>
-          <button
-            onClick={() => setActiveMobileView('payment')}
-            style={{
-              flex: 1,
-              padding: '12px',
-              background: activeMobileView === 'payment' ? '#3b82f6' : 'transparent',
-              color: activeMobileView === 'payment' ? 'white' : '#6b7280',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px',
-              fontWeight: '500',
-              fontSize: '0.875rem'
-            }}
-          >
-            <CreditCard size={18} />
-            Make Payment
-          </button>
-          <button
-            onClick={() => setActiveMobileView('summary')}
-            style={{
-              flex: 1,
-              padding: '12px',
-              background: activeMobileView === 'summary' ? '#3b82f6' : 'transparent',
-              color: activeMobileView === 'summary' ? 'white' : '#6b7280',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px',
-              fontWeight: '500',
-              fontSize: '0.875rem'
-            }}
-          >
-            <Receipt size={18} />
-            Balance Summary
-          </button>
-        </div>
-      )}
       
       {/* Main Content */}
       <div style={{ 
@@ -445,58 +584,38 @@ const resetSession = () => {
         gap: isMobile ? '16px' : '24px',
         marginBottom: isMobile ? '20px' : '24px'
       }}>
-        {/* Payment Form Section */}
-        {(isMobile ? activeMobileView === 'payment' : true) && (
-          <div>
-            <PaymentForm 
-              onPaymentComplete={handleDataUpdate} 
-              onAddStudent={handleAddStudent}
-              feeStructures={feeStructures}
-              busRegistrations={busRegistrations}
-              busRoutes={busRoutes}
-              parentStudents={students}
-            />
-            {students.length > 0 && !isMobile && (
-              <div style={{ marginTop: '16px' }}>
-                <button 
-                  onClick={handleAddStudent}
-                  className="btn btn-primary"
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-                >
-                  <PlusCircle size={16} />
-                  Add Another Student
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-        
-        {/* Balance Summary Section */}
-        {(isMobile ? activeMobileView === 'summary' : true) && (
-          <StudentBalanceSummary 
-            students={studentsWithBalances} 
-            onUpdate={handleDataUpdate}
-            busRoutes={busRoutes}
+        <div>
+          <PaymentForm 
+            onPaymentComplete={handleDataUpdate} 
+            onAddStudent={handleAddStudent}
+            feeStructures={feeStructures}
             busRegistrations={busRegistrations}
+            busRoutes={busRoutes}
+            parentStudents={students}
           />
-        )}
+          {students.length > 0 && (
+            <div style={{ marginTop: '16px' }}>
+              <button 
+                onClick={handleAddStudent}
+                className="btn btn-primary"
+                style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+              >
+                <PlusCircle size={16} />
+                Add Another Student
+              </button>
+            </div>
+          )}
+        </div>
+        
+        <StudentBalanceSummary 
+          students={studentsWithBalances} 
+          onUpdate={handleDataUpdate}
+          busRoutes={busRoutes}
+          busRegistrations={busRegistrations}
+        />
       </div>
       
-      {/* Add Student Button for Mobile */}
-      {isMobile && students.length > 0 && activeMobileView === 'payment' && (
-        <div style={{ marginBottom: '20px' }}>
-          <button 
-            onClick={handleAddStudent}
-            className="btn btn-primary"
-            style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-          >
-            <PlusCircle size={16} />
-            Add Another Student
-          </button>
-        </div>
-      )}
-      
-      {/* Payment History Section - ADDED BACK */}
+      {/* Payment History */}
       <div style={{ marginTop: '24px' }}>
         <PaymentHistory />
       </div>
@@ -512,5 +631,4 @@ const resetSession = () => {
     </div>
   );
 };
-
 export default ParentDashboard;

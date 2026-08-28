@@ -455,6 +455,40 @@ const AdminDashboard = () => {
   Recover Sessions
 </button>
 
+const syncSessions = async () => {
+  try {
+    // Get all sessions from Firebase
+    const firebaseSessions = await getSessions();
+    
+    if (firebaseSessions.length > 0) {
+      // Update local storage
+      localStorage.setItem('schoolSessions', JSON.stringify(firebaseSessions));
+      
+      // Find active session
+      const activeSession = firebaseSessions.find(s => s.isActive);
+      if (activeSession) {
+        localStorage.setItem('currentSessionId', activeSession.id);
+        // Refresh the page to load the new session
+        toast.success(`Synced to ${activeSession.name} session`);
+        setTimeout(() => window.location.reload(), 1000);
+      } else {
+        toast.warning('No active session found');
+      }
+    } else {
+      toast.error('No sessions found in Firebase');
+    }
+  } catch (error) {
+    console.error('Error syncing sessions:', error);
+    toast.error('Failed to sync sessions');
+  }
+};
+
+// Add a button for this
+<button onClick={syncSessions} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+  <RefreshCw size={16} />
+  Sync Sessions
+</button>
+
   const tabs = [
     { id: 'admins', label: 'Admin Management', icon: <Shield size={18} /> },
     { id: 'fees', label: 'Fee Structure', icon: <BookOpen size={18} /> },

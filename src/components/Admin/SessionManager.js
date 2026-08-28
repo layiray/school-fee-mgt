@@ -1,11 +1,13 @@
+// src/components/Admin/SessionManager.js
 import React, { useState } from 'react';
 import { useSession } from '../../context/SessionContext';
-import { Calendar, Plus, Check, Archive, X, Layers } from 'lucide-react';
+import { Calendar, Plus, Check, Archive, X, Layers, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const SessionManager = () => {
-  const { sessions, currentSession, createSession, switchSession, archiveSession } = useSession();
+  const { sessions, currentSession, createSession, switchSession, archiveSession, forceRefresh } = useSession();
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [newSession, setNewSession] = useState({
     name: '',
     startYear: new Date().getFullYear(),
@@ -14,21 +16,18 @@ const SessionManager = () => {
     endDate: ''
   });
 
-// src/components/Admin/SessionManager.js - Update the create session function
-
   const handleCreateSession = async (e) => {
     e.preventDefault();
     
     const sessionName = newSession.name || `${newSession.startYear}/${newSession.endYear}`;
     
-    // Check if session already exists (in current sessions list)
+    // Check if session already exists
     if (sessions.find(s => s.name === sessionName)) {
       toast.error('Session already exists!');
       return;
     }
     
-    // Create the new session (this will preserve existing sessions)
-    await createSession({
+    const result = await createSession({
       name: sessionName,
       startYear: newSession.startYear,
       endYear: newSession.endYear,
@@ -36,14 +35,23 @@ const SessionManager = () => {
       endDate: newSession.endDate
     });
     
-    setShowCreateForm(false);
-    setNewSession({
-      name: '',
-      startYear: new Date().getFullYear(),
-      endYear: new Date().getFullYear() + 1,
-      startDate: '',
-      endDate: ''
-    });
+    if (result) {
+      setShowCreateForm(false);
+      setNewSession({
+        name: '',
+        startYear: new Date().getFullYear(),
+        endYear: new Date().getFullYear() + 1,
+        startDate: '',
+        endDate: ''
+      });
+    }
+  };
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await forceRefresh();
+    setIsRefreshing(false);
+    toast.success('Sessions refreshed!');
   };
 
   const getSessionStatus = (session) => {
@@ -71,14 +79,25 @@ const SessionManager = () => {
               </p>
             )}
           </div>
-          <button 
-            onClick={() => setShowCreateForm(true)} 
-            className="btn btn-success"
-            style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
-          >
-            <Plus size={16} />
-            New Session
-          </button>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button 
+              onClick={handleRefresh} 
+              className="btn btn-secondary"
+              style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+              disabled={isRefreshing}
+            >
+              <RefreshCw size={16} className={isRefreshing ? 'spinner' : ''} />
+              {isRefreshing ? 'Refreshing...' : 'Refresh'}
+            </button>
+            <button 
+              onClick={() => setShowCreateForm(true)} 
+              className="btn btn-success"
+              style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+            >
+              <Plus size={16} />
+              New Session
+            </button>
+          </div>
         </div>
       </div>
       <div className="card-body">
@@ -113,7 +132,6 @@ const SessionManager = () => {
                         <button
                           onClick={() => {
                             switchSession(session.id);
-                            toast.success(`Switched to ${session.name} session`);
                           }}
                           className="btn btn-primary"
                           style={{ padding: '6px 12px', fontSize: '0.75rem' }}
@@ -127,7 +145,6 @@ const SessionManager = () => {
                           onClick={() => {
                             if (window.confirm(`Archive ${session.name} session? This will mark it as completed.`)) {
                               archiveSession(session.id);
-                              toast.success(`${session.name} archived`);
                             }
                           }}
                           className="btn btn-secondary"
@@ -141,6 +158,13 @@ const SessionManager = () => {
                   </td>
                 </tr>
               ))}
+              {sessions.length === 0 && (
+                <tr>
+                  <td colSpan="4" style={{ textAlign: 'center', padding: '40px', color: '#6b7280' }}>
+                    No sessions found. Create your first session above.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -157,7 +181,7 @@ const SessionManager = () => {
         </div>
       </div>
       
-      {/* Create Session Modal - FIXED with proper overflow and z-index */}
+      {/* Create Session Modal */}
       {showCreateForm && (
         <div className="modal-overlay" onClick={() => setShowCreateForm(false)}>
           <div className="modal-content" style={{ 
