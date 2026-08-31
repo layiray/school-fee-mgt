@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useSession } from '../../context/SessionContext';
-import { saveBusRegistrations } from '../../config/firebase';
+import { saveBusRegistrations, listenToBusRegistrations, getBusRegistrations } from '../../config/firebase';
 import { Bus, MapPin, Clock, DollarSign, CheckCircle, Save } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -13,13 +13,19 @@ const BusRegistration = ({ studentId, onUpdate, busRoutes = [], existingRegistra
   const [selectedRoute, setSelectedRoute] = useState('');
   const [usesBus, setUsesBus] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [localRegistrations, setLocalRegistrations] = useState(existingRegistrations);
 
   const terms = ['First Term', 'Second Term', 'Third Term'];
 
+  // Update local registrations when props change
+  useEffect(() => {
+    setLocalRegistrations(existingRegistrations);
+  }, [existingRegistrations]);
+
   // Get existing registration for selected term
   const getExistingRegistration = (term) => {
-    return existingRegistrations.find(
-      r => r.studentId === studentId && r.term === term
+    return localRegistrations.find(
+      r => r.studentId === studentId && r.term === term && r.sessionId === currentSession?.id
     );
   };
 
@@ -28,7 +34,7 @@ const BusRegistration = ({ studentId, onUpdate, busRoutes = [], existingRegistra
     const existingReg = getExistingRegistration(term);
     if (existingReg && existingReg.usesBus) {
       setUsesBus(true);
-      setSelectedRoute(existingReg.routeId);
+      setSelectedRoute(existingReg.routeId ? String(existingReg.routeId) : '');
     } else {
       setUsesBus(false);
       setSelectedRoute('');
@@ -43,57 +49,90 @@ const BusRegistration = ({ studentId, onUpdate, busRoutes = [], existingRegistra
       return;
     }
     
+    if (usesBus && !selectedRoute) {
+      toast.error('Please select a bus route');
+      return;
+    }
+    
     setLoading(true);
 
-    const selectedRouteData = busRoutes.find(r => r.id.toString() === selectedRoute);
-    
-    // Get all existing registrations
-    const allRegistrations = JSON.parse(localStorage.getItem('studentBusRegistrations') || '[]');
-    
-    // Remove existing registration for this term and student
-    const filtered = allRegistrations.filter(
-      r => !(r.studentId === studentId && r.sessionId === currentSession?.id && r.term === selectedTerm)
-    );
-    
-    // Add new registration if using bus
-    if (usesBus && selectedRouteData) {
-      const newRegistration = {
-        id: Date.now(),
-        studentId: studentId,
-        sessionId: currentSession?.id,
-        sessionName: currentSession?.name,
-        term: selectedTerm,
-        usesBus: true,
-        routeId: selectedRoute,
-        routeLocation: selectedRouteData?.location,
-        busFee: selectedRouteData?.fee,
-        registeredDate: new Date().toISOString(),
-        parentId: user.uid
-      };
-      filtered.push(newRegistration);
+    try {
+      // Get ALL current registrations from Firebase
+      const allRegistrations = await getBusRegistrations();
+      console.log('All registrations before update:', allRegistrations);
+      
+      // Filter out ONLY the registration for this student + term + session
+      // Keep ALL other registrations intact
+      const filteredRegistrations = allRegistrations.filter(
+        r => !(r.studentId === studentId && r.sessionId === currentSession?.id && r.term === selectedTerm)
+      );
+      
+      console.log('Filtered registrations (keeping others):', filteredRegistrations);
+      
+      // If using bus, add the new registration
+      let updatedRegistrations = filteredRegistrations;
+      
+      if (usesBus && selectedRoute) {
+        const selectedRouteData = busRoutes.find(r => String(r.id) === String(selectedRoute));
+        
+        if (!selectedRouteData) {
+          toast.error('Selected route not found');
+          setLoading(false);
+          return;
+        }
+        
+        const newRegistration = {
+          id: Date.now(),
+          studentId: studentId,
+          sessionId: currentSession?.id,
+          sessionName: currentSession?.name,
+          term: selectedTerm,
+          usesBus: true,
+          routeId: selectedRoute,
+          routeLocation: selectedRouteData?.location || 'Unknown',
+          busFee: selectedRouteData?.fee || 0,
+          registeredDate: new Date().toISOString(),
+          parentId: user?.uid || 'unknown'
+        };
+        
+        updatedRegistrations = [...filteredRegistrations, newRegistration];
+        console.log('Added new registration:', newRegistration);
+      }
+      
+      console.log('Final registrations to save:', updatedRegistrations);
+      
+      // Save ALL registrations back to Firebase
+      const result = await saveBusRegistrations(updatedRegistrations);
+      
+      if (result.success) {
+        // Update local state
+        setLocalRegistrations(updatedRegistrations);
+        
+        if (usesBus && selectedRoute) {
+          const route = busRoutes.find(r => String(r.id) === String(selectedRoute));
+          toast.success(`Bus registration for ${selectedTerm} completed! Fee: ₦${route?.fee?.toLocaleString() || 0}`);
+        } else {
+          toast.success(`Bus registration removed for ${selectedTerm}`);
+        }
+        
+        // Reset form
+        setSelectedTerm('');
+        setSelectedRoute('');
+        setUsesBus(false);
+        
+        // Notify parent component to refresh
+        if (onUpdate && typeof onUpdate === 'function') {
+          onUpdate();
+        }
+      } else {
+        toast.error('Failed to save bus registration: ' + (result.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Error saving bus registration:', error);
+      toast.error('Failed to save bus registration: ' + error.message);
+    } finally {
+      setLoading(false);
     }
-    
-    localStorage.setItem('studentBusRegistrations', JSON.stringify(filtered));
-    
-    // Also save to Firebase
-    await saveBusRegistrations(filtered);
-    
-    if (usesBus && selectedRouteData) {
-      toast.success(`Bus registration for ${selectedTerm} completed! Fee: ₦${selectedRouteData.fee.toLocaleString()}`);
-    } else {
-      toast.success(`Bus registration removed for ${selectedTerm}`);
-    }
-    
-    // Reset form
-    setSelectedTerm('');
-    setSelectedRoute('');
-    setUsesBus(false);
-    
-    if (onUpdate && typeof onUpdate === 'function') {
-      onUpdate();
-    }
-    
-    setLoading(false);
   };
 
   if (busRoutes.length === 0) {
@@ -119,6 +158,7 @@ const BusRegistration = ({ studentId, onUpdate, busRoutes = [], existingRegistra
             onChange={(e) => handleTermChange(e.target.value)}
             required
             style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db' }}
+            disabled={loading}
           >
             <option value="">Select Term</option>
             {terms.map(term => {
@@ -144,6 +184,7 @@ const BusRegistration = ({ studentId, onUpdate, busRoutes = [], existingRegistra
                     if (!e.target.checked) setSelectedRoute('');
                   }}
                   style={{ width: 'auto' }}
+                  disabled={loading}
                 />
                 My child uses the school bus for {selectedTerm}
               </label>
@@ -158,10 +199,11 @@ const BusRegistration = ({ studentId, onUpdate, busRoutes = [], existingRegistra
                     onChange={(e) => setSelectedRoute(e.target.value)}
                     required
                     style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db' }}
+                    disabled={loading}
                   >
                     <option value="">Select a route</option>
                     {busRoutes.map(route => (
-                      <option key={route.id} value={route.id}>
+                      <option key={route.id} value={String(route.id)}>
                         {route.location} - ₦{route.fee.toLocaleString()}/term
                         {route.pickupTime && ` (Pickup: ${route.pickupTime})`}
                       </option>
@@ -177,7 +219,7 @@ const BusRegistration = ({ studentId, onUpdate, busRoutes = [], existingRegistra
                     marginBottom: '16px'
                   }}>
                     <p style={{ margin: 0, fontSize: '14px' }}>
-                      <strong>Bus Fee for {selectedTerm}:</strong> ₦{busRoutes.find(r => r.id.toString() === selectedRoute)?.fee.toLocaleString()}
+                      <strong>Bus Fee for {selectedTerm}:</strong> ₦{busRoutes.find(r => String(r.id) === String(selectedRoute))?.fee?.toLocaleString() || 0}
                     </p>
                   </div>
                 )}
@@ -197,11 +239,11 @@ const BusRegistration = ({ studentId, onUpdate, busRoutes = [], existingRegistra
         </button>
       </form>
       
-      {/* Display existing registrations */}
-      {existingRegistrations.filter(r => r.studentId === studentId && r.usesBus).length > 0 && (
+      {/* Display existing registrations for this student */}
+      {localRegistrations.filter(r => r.studentId === studentId && r.usesBus).length > 0 && (
         <div style={{ marginTop: '16px' }}>
           <h5 style={{ marginBottom: '12px', fontSize: '13px', color: '#4a5568' }}>Current Bus Registrations:</h5>
-          {existingRegistrations.filter(r => r.studentId === studentId && r.usesBus).map(reg => (
+          {localRegistrations.filter(r => r.studentId === studentId && r.usesBus).map(reg => (
             <div key={reg.id} style={{ 
               padding: '10px', 
               background: '#d1fae5', 
@@ -216,7 +258,7 @@ const BusRegistration = ({ studentId, onUpdate, busRoutes = [], existingRegistra
                 </div>
                 <div>
                   <span style={{ fontWeight: 'bold', color: '#065f46' }}>
-                    ₦{reg.busFee.toLocaleString()}
+                    ₦{reg.busFee?.toLocaleString() || 0}
                   </span>
                 </div>
               </div>

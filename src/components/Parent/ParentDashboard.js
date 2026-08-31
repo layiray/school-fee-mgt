@@ -151,11 +151,12 @@ const ParentDashboard = () => {
     unsubscribeRefs.current.push(unsubExtra);
 
     // 6. Listen to bus registrations
-    const unsubBusReg = listenToBusRegistrations((registrations) => {
-      if (!isMounted) return;
-      setBusRegistrations(registrations || []);
-    });
-    unsubscribeRefs.current.push(unsubBusReg);
+  const unsubBusReg = listenToBusRegistrations((registrations) => {
+    if (!isMounted) return;
+    console.log(`🚌 Bus registrations loaded: ${registrations?.length || 0}`);
+    setBusRegistrations(registrations || []);
+  });
+  unsubscribeRefs.current.push(unsubBusReg);
 
     // Safety timer
     if (loadTimeoutRef.current) {
